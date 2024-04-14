@@ -99,16 +99,22 @@ def spark_iter(current_front, spread_rates):
     delta_phi = -1 * np.multiply(abs_grad_phi, spread_rates)
     new_phi = phi + delta_phi
 
-    ## update front to reflect new distances
-    new_front[new_phi < 1] = 1
+    ## update front to reflect new distances. dist to front is considered to be from the center of the grid so if 
+    ## dist < 0.5, there is fire inside the grid cell, so we consider it "on fire"
+    new_front[new_phi <= 0.5] = 1
 
     return(new_front)
 
 ## example data (25 x 25) where every cell has spread rate 1 and fire starts as a single central point
 ex_front = np.zeros((25, 25))
 ex_front[12, 12] = 1
-ex_spread = np.ones((25, 25)) / 2
+ex_spread = np.ones((25, 25)) * 2
 
-
+print("spread rates:")
 print_matrix(ex_spread)
-spark_iter(ex_front, ex_spread)
+print("initial front:")
+print_matrix(ex_front)
+
+new_front = spark_iter(ex_front, ex_spread)
+print("new front:")
+print(new_front)
