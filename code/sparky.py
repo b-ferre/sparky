@@ -8,60 +8,36 @@ import tensorflow as tf
 
 ## helper which uses BFS to generate distance matrix from fire-front matrix
 def dist_to_front(matrix):
-
     rows, cols = matrix.shape
-
-    ## replace solid fronts with front borders
+    
+    # Replace solid fronts with front borders
     borders = np.copy(matrix)
-    for (i, j) in [(i, j) for i, row in enumerate(matrix) for j, element in enumerate(row) if element == 1]:
-        if ((i < rows - 1) and (j < cols - 1) and (i > 0) and (j > 0)):
-            neighbors = [(i-1, j-1), (i, j-1), (i+1, j-1), (i, j-1), (i, j+1), (i+1, j-1), (i+1, j), (i+1, j+1)]
-            neighbor_vals = [matrix[x][y] for (x, y) in neighbors]
-            if (0 not in neighbor_vals):
-                borders[i][j] = 0
-
-
-    ## Use BFS to calculate shortest distance to a border for each cell
-    rows = len(matrix)
-    cols = len(matrix[0])
-    distances = [[None] * cols for _ in range(rows)]
+    padding = np.pad(matrix, 1, mode='constant', constant_values=0)
+    neighbors = np.array([padding[i-1:i+2, j-1:j+2] for i in range(1, rows+1) for j in range(1, cols+1)])
+    neighbors_sum = np.sum(neighbors, axis=(1, 2))
+    borders[matrix == 1] = (neighbors_sum[matrix.ravel() == 1] != 9)
+    
+    # Use BFS to calculate shortest distance to a border
+    distances = np.zeros_like(matrix, dtype=int)
     queue = deque()
-
-    # Find all cells with value 1 and add them to the queue
-    for i in range(rows):
-        for j in range(cols):
-            if borders[i][j] == 1:
-                distances[i][j] = 0
-                queue.append((i, j))
-
+    distances[borders == 1] = 0
+    queue.extend(np.transpose(np.nonzero(borders == 1)))
+    
     while queue:
         x, y = queue.popleft()
-        # Check all 8 adjacent cells
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                if dx == 0 and dy == 0:
-                    continue
-                nx, ny = x + dx, y + dy
-                # Check if the adjacent cell is within bounds and has not been visited yet
-                if 0 <= nx < rows and 0 <= ny < cols and distances[nx][ny] is None:
-                    # If the adjacent cell is a border cell, assign a distance of 0
-                    if borders[nx][ny] == 1:
-                        distances[nx][ny] = 0
-                    else:
-                        distances[nx][ny] = distances[x][y] + 1
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx, ny = x + dx, y + dy
+            if (0 <= nx < rows) and (0 <= ny < cols) and (distances[nx, ny] == 0):
+                if borders[nx, ny] == 0:
+                    distances[nx, ny] = distances[x, y] + 1
                     queue.append((nx, ny))
-
+    
     # Replace all internal cell distances with their negation
-    for (i, j) in [(i, j) for i, row in enumerate(matrix) for j, element in enumerate(row) if element == 1]:
-        if ((i < rows - 1) and (j < cols - 1) and (i > 0) and (j > 0)):
-            #print(f"checking internality of {(i, j)}")
-            neighbors = [(i-1, j-1), (i, j-1), (i+1, j-1), (i, j-1), (i, j+1), (i+1, j-1), (i+1, j), (i+1, j+1)]
-            neighbor_vals = [matrix[x][y] for (x, y) in neighbors]
-            if (0 not in neighbor_vals):
-                #print(f"surrounded cell at {(i, j)}")
-                print()
-                distances[i][j] = -1 * distances[i][j]
-
+    distances[np.logical_and(matrix == 1, np.all(borders[1:-1, 1:-1] == 0, axis=(0, 1)))] *= -1
+    
+    # Set cells outside the fire-front to 0
+    distances[matrix == 0] = 0
+    
     return distances
 
 ## helper that, given a numerical matrix with entries representing function values,
@@ -133,3 +109,6 @@ def spark_iter(current_front, spread_rates):
 ###############################################################################################################
 ##                                              MODEL CODE                                                   ##
 ###############################################################################################################
+
+ones = np.ones((10,10))
+print_matrix(dist_to_front(ones))
