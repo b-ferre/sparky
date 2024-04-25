@@ -1,5 +1,6 @@
 import numpy as np
 from collections import deque
+import tensorflow as tf
 
 ###############################################################################################################
 ##                                                HELPERS                                                    ##
@@ -7,15 +8,29 @@ from collections import deque
 
 ## helper which uses BFS to generate distance matrix from fire-front matrix
 def dist_to_front(matrix):
+
+    rows, cols = matrix.shape
+
+    ## replace solid fronts with front borders
+    borders = np.copy(matrix)
+    for (i, j) in [(i, j) for i, row in enumerate(matrix) for j, element in enumerate(row) if element == 1]:
+        if ((i < rows - 1) and (j < cols - 1) and (i > 0) and (j > 0)):
+            neighbors = [(i-1, j-1), (i, j-1), (i+1, j-1), (i, j-1), (i, j+1), (i+1, j-1), (i+1, j), (i+1, j+1)]
+            neighbor_vals = [matrix[x][y] for (x, y) in neighbors]
+            if (0 not in neighbor_vals):
+                borders[i][j] = 0
+
+
+    ## Use BFS to calculate shortest distance to a border for each cell
     rows = len(matrix)
     cols = len(matrix[0])
-    distances = [[float('inf')] * cols for _ in range(rows)]
+    distances = [[None] * cols for _ in range(rows)]
     queue = deque()
 
     # Find all cells with value 1 and add them to the queue
     for i in range(rows):
         for j in range(cols):
-            if matrix[i][j] == 1:
+            if borders[i][j] == 1:
                 distances[i][j] = 0
                 queue.append((i, j))
 
@@ -27,10 +42,25 @@ def dist_to_front(matrix):
                 if dx == 0 and dy == 0:
                     continue
                 nx, ny = x + dx, y + dy
-                # Check if the adjacent cell is within bounds and update the distance
-                if 0 <= nx < rows and 0 <= ny < cols and distances[nx][ny] == float('inf'):
-                    distances[nx][ny] = distances[x][y] + 1
+                # Check if the adjacent cell is within bounds and has not been visited yet
+                if 0 <= nx < rows and 0 <= ny < cols and distances[nx][ny] is None:
+                    # If the adjacent cell is a border cell, assign a distance of 0
+                    if borders[nx][ny] == 1:
+                        distances[nx][ny] = 0
+                    else:
+                        distances[nx][ny] = distances[x][y] + 1
                     queue.append((nx, ny))
+
+    # Replace all internal cell distances with their negation
+    for (i, j) in [(i, j) for i, row in enumerate(matrix) for j, element in enumerate(row) if element == 1]:
+        if ((i < rows - 1) and (j < cols - 1) and (i > 0) and (j > 0)):
+            #print(f"checking internality of {(i, j)}")
+            neighbors = [(i-1, j-1), (i, j-1), (i+1, j-1), (i, j-1), (i, j+1), (i+1, j-1), (i+1, j), (i+1, j+1)]
+            neighbor_vals = [matrix[x][y] for (x, y) in neighbors]
+            if (0 not in neighbor_vals):
+                #print(f"surrounded cell at {(i, j)}")
+                print()
+                distances[i][j] = -1 * distances[i][j]
 
     return distances
 
@@ -45,13 +75,13 @@ def estimate_gradient(matrix):
     for i in range(rows):
         for j in range(cols):
             if i > 0:
-                gradient_x[i, j] += (matrix[i, j] - matrix[i - 1, j])
+                gradient_x[i, j] += (float(matrix[i, j] or 0) - float(matrix[i - 1, j] or 0))
             if i < rows - 1:
-                gradient_x[i, j] += (matrix[i + 1, j] - matrix[i, j])
+                gradient_x[i, j] += (float(matrix[i + 1, j] or 0) - float(matrix[i, j] or 0))
             if j > 0:
-                gradient_y[i, j] += (matrix[i, j] - matrix[i, j - 1])
+                gradient_y[i, j] += (float(matrix[i, j] or 0) - float(matrix[i, j - 1] or 0))
             if j < cols - 1:
-                gradient_y[i, j] += (matrix[i, j + 1] - matrix[i, j])
+                gradient_y[i, j] += (float(matrix[i, j + 1] or 0) - float(matrix[i, j] or 0))
 
     return gradient_x, gradient_y
 
@@ -66,12 +96,7 @@ def print_matrix(matrix):
         formatted_row = ' '.join(f'{num:{max_width}}' for num in row)
         print(formatted_row)
 
-
-###############################################################################################################
-##                                              MODEL CODE                                                   ##
-###############################################################################################################
-
-
+## code that mimics SPARK's level-set method FIXME: be more thorough w this if time (see notes in function)
 def spark_iter(current_front, spread_rates):
     ## - current_front and spread_rates must be the same dimension
     assert(current_front.shape == spread_rates.shape)
@@ -105,16 +130,6 @@ def spark_iter(current_front, spread_rates):
 
     return(new_front)
 
-## example data (25 x 25) where every cell has spread rate 1 and fire starts as a single central point
-ex_front = np.zeros((25, 25))
-ex_front[12, 12] = 1
-ex_spread = np.ones((25, 25)) * 2
-
-print("spread rates:")
-print_matrix(ex_spread)
-print("initial front:")
-print_matrix(ex_front)
-
-new_front = spark_iter(ex_front, ex_spread)
-print("new front:")
-print(new_front)
+###############################################################################################################
+##                                              MODEL CODE                                                   ##
+###############################################################################################################
