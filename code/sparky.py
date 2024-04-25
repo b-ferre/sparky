@@ -43,21 +43,18 @@ def dist_to_front(matrix):
 ## helper that, given a numerical matrix with entries representing function values,
 ## estimates the gradient of said function at every point
 def estimate_gradient(matrix):
-    matrix = np.matrix(matrix)
+    matrix = np.array(matrix, dtype=float)
     rows, cols = matrix.shape
-    gradient_x = np.zeros((rows, cols))
-    gradient_y = np.zeros((rows, cols))
 
-    for i in range(rows):
-        for j in range(cols):
-            if i > 0:
-                gradient_x[i, j] += (float(matrix[i, j] or 0) - float(matrix[i - 1, j] or 0))
-            if i < rows - 1:
-                gradient_x[i, j] += (float(matrix[i + 1, j] or 0) - float(matrix[i, j] or 0))
-            if j > 0:
-                gradient_y[i, j] += (float(matrix[i, j] or 0) - float(matrix[i, j - 1] or 0))
-            if j < cols - 1:
-                gradient_y[i, j] += (float(matrix[i, j + 1] or 0) - float(matrix[i, j] or 0))
+    # Compute gradient_x
+    gradient_x = np.zeros_like(matrix)
+    gradient_x[:, :-1] = np.diff(matrix, axis=1)
+    gradient_x[:, -1] = matrix[:, -1] - matrix[:, -2]
+
+    # Compute gradient_y
+    gradient_y = np.zeros_like(matrix)
+    gradient_y[:-1, :] = np.diff(matrix, axis=0)
+    gradient_y[-1, :] = matrix[-1, :] - matrix[-2, :]
 
     return gradient_x, gradient_y
 
@@ -110,5 +107,5 @@ def spark_iter(current_front, spread_rates):
 ##                                              MODEL CODE                                                   ##
 ###############################################################################################################
 
-ones = np.ones((10,10))
-print_matrix(dist_to_front(ones))
+ones = np.ones((10, 10))
+print(estimate_gradient(dist_to_front(ones)))
