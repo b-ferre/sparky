@@ -7,7 +7,7 @@ from geneticalgorithm import geneticalgorithm as ga
 import multiprocessing
 
 ## GLOBAL VARS FOR CONVENIENCE
-batch_size = 5  ## FIXME: up this, add stochasticity, and/or parallelize error computation on slurm
+batch_size = 10  ## FIXME: up this, add stochasticity, and/or parallelize error computation on slurm
 
 ## get/repackage training dataset
 training_dataset = get_dataset(
@@ -25,14 +25,14 @@ inputs, labels = next(iter(training_dataset))
 firesdata = np.append(inputs.numpy(), labels.numpy(), axis = 3)
 
 def objective_function(parameters):
-    model = sparky.sparknet(parameters = parameters)
+    model = sparky.sparsenet(parameters = parameters)
     loss = 0
     # make this stochastic (iterating through all 18k would be intractable and iterating through 
     # small batches will probably be info-less/encourage overfitting)
     for i in range(batch_size):
 
         # predict spread rates using sparknet, get current fire front
-        spread_rates = model.predict(firesdata[i, :, :, 0:12].reshape(-1)).reshape(64, 64) 
+        spread_rates = model.predict([firesdata[i, :, :, j] for j in range(12)])
         current_front = firesdata[i, :, :, 12]
 
         # use predcited spread rates and current front to predict next front
@@ -45,13 +45,15 @@ def objective_function(parameters):
     return loss
 
 ## create instance of model to make param counting easier
-model = sparky.sparknet()
-nparams = model.nweights + model.nbiases
+model = sparky.sparsenet()
+nparams = model.nparams
 
+print("> testing manual-param setting/objective calculation outside of optimization environment...")
 test_params = np.random.rand(nparams)
 test_obj = objective_function(test_params)
 
 ### SKOPT IMPLEMENTATION
+print(f"> initializing a gp_minimize search over {nparams} variables")
 param_bounds = [(-10.0, 10.0) for i in range(nparams)] ## FIXME: make more informed choice here
 opt = gp_minimize(objective_function, dimensions = param_bounds, n_calls = 100, n_initial_points = 10)
 print(opt)

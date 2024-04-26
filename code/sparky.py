@@ -1,7 +1,6 @@
 import numpy as np
 from collections import deque
 import tensorflow as tf
-import tensorflow as tf
 
 ###############################################################################################################
 ##                                                HELPERS                                                    ##
@@ -146,11 +145,17 @@ def test_helpers():
 ## TODO: replace boiler plate NN architecture with application specific one
 class sparknet():
 
-    def __init__(self, layer_sizes = [49152, 4096], 
-                    activations = ['softmax'],
-                    parameters = None):
+    ## class helper
+    def vprint(self, x):
+        if self.verbose == True:
+            print(x)
 
-        print(f"sparky initializing... {layer_sizes}")
+    def __init__(self, layer_sizes = [49152, 5, 4096], 
+                    activations = ['sigmoid', 'softmax'],
+                    parameters = None, verbose = True):
+
+        self.verbose = verbose
+        self.vprint(f"> sparky initializing... {layer_sizes}")
 
         self.layer_sizes = layer_sizes
         self.activations = activations
@@ -158,46 +163,31 @@ class sparknet():
         # initialize weights randomly
         self.weights = [np.random.randn(layer_sizes[i], layer_sizes[i-1]) for i in range(1, len(layer_sizes))]
         self.biases = [np.random.randn(layer_sizes[i], 1) for i in range(1, len(layer_sizes))]
-        print(len(self.weights))
-        print(len(self.weights))
 
         # define useful constants
-        self.nweights = np.sum(list(map(np.product, [w.shape for w in self.weights])))
+        self.nweights = np.sum(list(map(np.prod, [w.shape for w in self.weights])))
         self.nbiases = np.sum(layer_sizes[1:])
 
         # set parameters manually if they are passed
         if ((parameters is not None) and (len(parameters) == self.nweights + self.nbiases)):
-            print(f"manually setting parameters. length of param vector is {len(parameters)}")
-            print(len(self.weights))
-            print(len(self.biases))
+            self.vprint(f"    > manually setting parameters. length of param vector is {len(parameters)}")
             j = 0
             for i in range(len(self.weights)):
-                print(f"updating weights on layer {i}")
                 intermediate = parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]
-                print(len(intermediate))
-                print(layer_sizes[i])
-                print(layer_sizes[i+1])
                 self.weights[i] = np.array(parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]).reshape(layer_sizes[i+1], layer_sizes[i])
                 j +=  (layer_sizes[i + 1] * layer_sizes[i])
             for i in range(len(self.biases)):
-                print(f"updating biases on layer {i}")
                 self.biases[i] = np.array(parameters[j:(j + layer_sizes[i + 1])])
                 j += layer_sizes[i + 1]
 
-        print(f"spark init complete; {len(self.weights)}, {len(self.biases)}")
+        self.vprint(f"> sparky init complete!")
     
     def forward(self, X):
         A = X
-        print("predicting...")
-        print(len(self.weights))
+        self.vprint("> predicting...")
         for i in range(len(self.weights)):
-            print(f"forward propagating X (shape : {A.shape} through layer {i}...")
-            print(f"  > left-multiplying by W (shape : {self.weights[i].shape})")
             Z = np.dot(self.weights[i], A) + self.biases[i]
-            print(f"  > applying activation {self.activations[i]} to Z = WX (shape  : {Z.shape})")
             A = self.activation_function(Z, self.activations[i])
-            print(f"final shape of h(WX) is {A.shape}")
-        print(f"returning predictions Y_hat (shape : {A.shape})")
         return A
     
     def activation_function(self, Z, activation):
@@ -220,69 +210,109 @@ class sparknet():
 ## less parameters => more easily optimized
 ## 2,000,000+ params (as in even basic 2 layer fully-connected sparsenet) is intractable
 
+## convolution_size must be odd
 class sparsenet():
 
-    ### constants
+    ## parameters is a 1d vector of length sparsenet.nparams
+    def format_params(self, parameters):
+        if ((parameters is None) or (len(parameters) != self.nparams)):
+            return None
+        else :
+            params = {}
+            params['local_NLL_regression_weights'] = parameters[0:36].reshape(3, 12)
 
+            conv = []
+            for q in range(12):
+                conv.append(parameters[(q * (self.convolution_size ** 2)) : ((q + 1) * (self.convolution_size ** 2))].reshape(self.convolution_size, self.convolution_size))
+            params['convolutions'] = conv
 
+            j = 36 + (12 * (self.convolution_size ** 2))
+            params['convolution_regression_weights'] = parameters[j: j + 36].reshape(3, 12)
+            j += 36
+            print(f"post_conv: {self.nparams - j}")
 
-    def __init__(self, layer_sizes = [49152, 256, 4096], 
-                    activations = ['sigmoid', 'softmax'],
-                    parameters = None):
+            k = j + ((64 ** 2) * 12 * self.global_nodes)
+            params['global_net_weights'] = parameters[j : k].reshape(self.global_nodes, (64 * 64 * 12))
+            params['global_net_biases'] = parameters[k:(k + self.global_nodes)]
+            params['global_regression_weights'] = parameters[k:(k + self.global_nodes)]
+            
+            params['component_weights'] = parameters[(k + self.global_nodes): ]
+            return params
 
-        print(f"sparky initializing... {layer_sizes}")
+    def perform_convolution(self, matrix, kernel):
+        ## TODO: check this is right; this is GPT code lol
+        m, n = matrix.shape
+        k, _ = kernel.shape
+        result = np.zeros((m - k + 1, n - k + 1))
 
-        self.layer_sizes = layer_sizes
+        for i in range(m - k + 1):
+            for j in range(n - k + 1):
+                window = matrix[i:i + k, j:j + k]
+                result[i, j] = np.sum(window * kernel)
+
+        return result
+
+    def __init__(self, parameters = None,
+                global_nodes = 2,
+                convolution_size = 3,
+                activations = ['sigmoid', 'sigmoid', 'sigmoid']):
+
+        print(f"sparse-ky initializing...")
+
+        self.global_nodes = global_nodes
         self.activations = activations
+        self.convolution_size = convolution_size
+        self.nparams = (36) + ((12 * (convolution_size ** 2)) + 36) + ((global_nodes * (64 * 64 * 12)) + (2 * global_nodes)) + (3)      ## see architecture building below for explanation
+        self.params = self.format_params(parameters)
 
-        # initialize weights randomly
-        self.weights = [np.random.randn(layer_sizes[i], layer_sizes[i-1]) for i in range(1, len(layer_sizes))]
-        self.biases = [np.random.randn(layer_sizes[i], 1) for i in range(1, len(layer_sizes))]
-        print(len(self.weights))
-        print(len(self.weights))
+        if self.params == None:
+            self.params = {}
+            print("    > no parameters provided. initializing all weights randomly...")
+            self.params['local_NLL_regression_weights'] = np.random.randn(3, 12) ## row one is weights, row two is biases, row three is post-activation regression
 
-        # define useful constants
-        self.nweights = np.sum(list(map(np.product, [w.shape for w in self.weights])))
-        self.nbiases = np.sum(layer_sizes[1:])
+            self.params['convolutions'] = [np.random.randn(convolution_size, convolution_size) for i in range(12)]
+            self.params['convolution_regression_weights'] = np.random.randn(3, 12) ## row one is weights, row two is biases, row three is post-activation regression
 
-        # set parameters manually if they are passed
-        if ((parameters is not None) and (len(parameters) == self.nweights + self.nbiases)):
-            print(f"manually setting parameters. length of param vector is {len(parameters)}")
-            print(len(self.weights))
-            print(len(self.biases))
-            j = 0
-            for i in range(len(self.weights)):
-                print(f"updating weights on layer {i}")
-                intermediate = parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]
-                print(len(intermediate))
-                print(layer_sizes[i])
-                print(layer_sizes[i+1])
-                self.weights[i] = np.array(parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]).reshape(layer_sizes[i+1], layer_sizes[i])
-                j +=  (layer_sizes[i + 1] * layer_sizes[i])
-            for i in range(len(self.biases)):
-                print(f"updating biases on layer {i}")
-                self.biases[i] = np.array(parameters[j:(j + layer_sizes[i + 1])])
-                j += layer_sizes[i + 1]
+            self.params['global_net_weights'] = np.random.randn(global_nodes, (64 * 64 * 12))
+            self.params['global_net_biases'] = np.random.randn(global_nodes)
+            self.params['global_regression_weights'] = np.random.randn(global_nodes)
 
-        print(f"spark init complete; {len(self.weights)}, {len(self.biases)}")
+            self.params['component_weights'] = np.random.randn(3)
+
+        print(f"spark init complete!")
     
-    def forward(self, X):
-        A = X
-        print("predicting...")
-        print(len(self.weights))
-        for i in range(len(self.weights)):
-            print(f"forward propagating X (shape : {A.shape} through layer {i}...")
-            print(f"  > left-multiplying by W (shape : {self.weights[i].shape})")
-            Z = np.dot(self.weights[i], A) + self.biases[i]
-            print(f"  > applying activation {self.activations[i]} to Z = WX (shape  : {Z.shape})")
-            A = self.activation_function(Z, self.activations[i])
-            print(f"final shape of h(WX) is {A.shape}")
-        print(f"returning predictions Y_hat (shape : {A.shape})")
-        return A
-    
+    ## firedata needs to be a list of 12 64 x 64 matricies
+    def forward(self, firedata):
+        pred = np.zeros((64, 64))
+
+        ## add weighted fully local regression component to predictions
+        local_reg_activations= [self.activation_function(np.array(((self.params['local_NLL_regression_weights'][0, i] * firedata[i]) + self.params['local_NLL_regression_weights'][1, i])), self.activations[0]) for i in range(12)]
+        local_reg_component = np.sum(np.array([(self.params['local_NLL_regression_weights'][2, i] * local_reg_activations[i]) for i in range(12)]), axis = 0)
+        pred += local_reg_component * self.params['component_weights'][0] ## adds different values everywhere
+
+        ## apply convolutional component
+        to_conv = [np.pad(firedata[i], (int((self.convolution_size - 1) / 2),), 'constant', constant_values = 0) for i in range(12)]
+        convd = [self.perform_convolution(to_conv[i], self.params['convolutions'][i]) for i in range(12)]
+        conv_reg_activations= [self.activation_function(np.array(((self.params['convolution_regression_weights'][0, i] * convd[i]) + self.params['convolution_regression_weights'][1, i])), self.activations[1]) for i in range(12)]
+        conv_reg_component = np.sum(np.array([(self.params['convolution_regression_weights'][2, i] * conv_reg_activations[i]) for i in range(12)]), axis = 0)
+        pred += conv_reg_component * self.params['component_weights'][1] ## adds different values everywhere
+        
+        ## apply (shallow) global neural network component
+        vectorized = np.stack(firedata, axis = -1).reshape(-1, )
+        nn_activations = self.activation_function(np.dot(self.params['global_net_weights'], vectorized) + self.params['global_net_biases'], self.activations[2])
+        nn_component = np.dot(nn_activations, self.params['global_regression_weights'])
+        pred += nn_component * self.params['component_weights'][2]  ## this is adding a global scalar based on overall conditions
+
+        return pred
+
     def activation_function(self, Z, activation):
         if activation == 'sigmoid':
-            return 1 / (1 + np.exp(-Z))
+            try:
+                return 1 / (1 + np.exp(-Z))
+            except RuntimeWarning:
+                print("got one")
+                print(-Z)
+                return 1 / (1 + np.exp(-Z))
         elif activation == 'relu':
             return np.maximum(0, Z)
         elif activation == 'tanh':
