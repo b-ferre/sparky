@@ -19,7 +19,7 @@ def dist_to_front(matrix):
     borders[matrix == 1] = (neighbors_sum[matrix.ravel() == 1] != 9)
     
     # Use BFS to calculate shortest distance to a border
-    distances = np.zeros_like(matrix, dtype=int)
+    distances = np.zeros_like(matrix, dtype=float)
     queue = deque()
     distances[borders == 1] = 0
     queue.extend(np.transpose(np.nonzero(borders == 1)))
@@ -28,16 +28,20 @@ def dist_to_front(matrix):
         x, y = queue.popleft()
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             nx, ny = x + dx, y + dy
-            if (0 <= nx < rows) and (0 <= ny < cols) and (distances[nx, ny] == 0):
+            if (0 <= nx < rows) and (0 <= ny < cols) and ((distances[nx, ny] == 0) or (distances[nx, ny] > distances[x, y] + 1)):
                 if borders[nx, ny] == 0:
                     distances[nx, ny] = distances[x, y] + 1
+                    queue.append((nx, ny))
+        for dx, dy in [(1, 1), (-1, -1), (-1, 1), (1, -1)]:
+            nx, ny = x + dx, y + dy
+            if (0 <= nx < rows) and (0 <= ny < cols) and ((distances[nx, ny] == 0) or (distances[nx, ny] > distances[x, y] + np.sqrt(2))):
+                if borders[nx, ny] == 0:
+                    distances[nx, ny] = distances[x, y] + np.sqrt(2)
                     queue.append((nx, ny))
     
     # Replace all internal cell distances with their negation
     distances[np.logical_and(matrix == 1, np.all(borders[1:-1, 1:-1] == 0, axis=(0, 1)))] *= -1
-    
-    # Set cells outside the fire-front to 0
-    distances[matrix == 0] = 0
+    distances = np.round(distances, 3)
     
     return distances
 
@@ -61,6 +65,7 @@ def estimate_gradient(matrix):
 
 ## prints front matrix with one row per line and all entries evenly spaced
 def print_matrix(matrix):
+    matrix = np.round(matrix, 3)
     np.set_printoptions(linewidth=np.inf)  # Disable line-wrapping
     # Determine the maximum width needed for each element
     max_width = max(len(str(max(row))) for row in matrix)
@@ -118,6 +123,20 @@ def loss(true_next_front, pred_next_front):
     loss += (10 * (max(0, true_fire_size - pred_fire_size))) + (2 * (max(0, pred_fire_size - true_fire_size)))
     return loss
 
+def test_helpers():
+    test_front = np.zeros((20, 20))
+    test_front[10, 10] = 1
+    print("")
+    print_matrix(test_front)
+    print("... \n dist:")
+    print_matrix(dist_to_front(test_front))
+    gradient_x, gradient_y = estimate_gradient(dist_to_front(test_front))
+    print("... \n grad x:")
+    print_matrix(gradient_x)
+    print("... \n grad y:")
+    print_matrix(gradient_y)
+    print("... \n |nabla|:")
+    print_matrix(np.sqrt((gradient_x ** 2) + ((gradient_y) ** 2)))
 
 ###############################################################################################################
 ##                                              MODEL CODE                                                   ##
@@ -126,6 +145,86 @@ def loss(true_next_front, pred_next_front):
 
 ## TODO: replace boiler plate NN architecture with application specific one
 class sparknet():
+
+    def __init__(self, layer_sizes = [49152, 4096], 
+                    activations = ['softmax'],
+                    parameters = None):
+
+        print(f"sparky initializing... {layer_sizes}")
+
+        self.layer_sizes = layer_sizes
+        self.activations = activations
+
+        # initialize weights randomly
+        self.weights = [np.random.randn(layer_sizes[i], layer_sizes[i-1]) for i in range(1, len(layer_sizes))]
+        self.biases = [np.random.randn(layer_sizes[i], 1) for i in range(1, len(layer_sizes))]
+        print(len(self.weights))
+        print(len(self.weights))
+
+        # define useful constants
+        self.nweights = np.sum(list(map(np.product, [w.shape for w in self.weights])))
+        self.nbiases = np.sum(layer_sizes[1:])
+
+        # set parameters manually if they are passed
+        if ((parameters is not None) and (len(parameters) == self.nweights + self.nbiases)):
+            print(f"manually setting parameters. length of param vector is {len(parameters)}")
+            print(len(self.weights))
+            print(len(self.biases))
+            j = 0
+            for i in range(len(self.weights)):
+                print(f"updating weights on layer {i}")
+                intermediate = parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]
+                print(len(intermediate))
+                print(layer_sizes[i])
+                print(layer_sizes[i+1])
+                self.weights[i] = np.array(parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]).reshape(layer_sizes[i+1], layer_sizes[i])
+                j +=  (layer_sizes[i + 1] * layer_sizes[i])
+            for i in range(len(self.biases)):
+                print(f"updating biases on layer {i}")
+                self.biases[i] = np.array(parameters[j:(j + layer_sizes[i + 1])])
+                j += layer_sizes[i + 1]
+
+        print(f"spark init complete; {len(self.weights)}, {len(self.biases)}")
+    
+    def forward(self, X):
+        A = X
+        print("predicting...")
+        print(len(self.weights))
+        for i in range(len(self.weights)):
+            print(f"forward propagating X (shape : {A.shape} through layer {i}...")
+            print(f"  > left-multiplying by W (shape : {self.weights[i].shape})")
+            Z = np.dot(self.weights[i], A) + self.biases[i]
+            print(f"  > applying activation {self.activations[i]} to Z = WX (shape  : {Z.shape})")
+            A = self.activation_function(Z, self.activations[i])
+            print(f"final shape of h(WX) is {A.shape}")
+        print(f"returning predictions Y_hat (shape : {A.shape})")
+        return A
+    
+    def activation_function(self, Z, activation):
+        if activation == 'sigmoid':
+            return 1 / (1 + np.exp(-Z))
+        elif activation == 'relu':
+            return np.maximum(0, Z)
+        elif activation == 'tanh':
+            return np.tanh(Z)
+        elif activation == 'softmax':
+            expZ = np.exp(Z - np.max(Z, axis=0, keepdims=True))
+            return expZ / np.sum(expZ, axis=0, keepdims=True)
+        else:
+            raise ValueError("Activation function not supported.")
+    
+    def predict(self, X):
+        return self.forward(X)
+
+
+## less parameters => more easily optimized
+## 2,000,000+ params (as in even basic 2 layer fully-connected sparsenet) is intractable
+
+class sparsenet():
+
+    ### constants
+
+
 
     def __init__(self, layer_sizes = [49152, 256, 4096], 
                     activations = ['sigmoid', 'softmax'],
