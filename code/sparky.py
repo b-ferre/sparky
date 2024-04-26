@@ -1,6 +1,7 @@
 import numpy as np
 from collections import deque
 import tensorflow as tf
+import tensorflow as tf
 
 ###############################################################################################################
 ##                                                HELPERS                                                    ##
@@ -103,9 +104,95 @@ def spark_iter(current_front, spread_rates):
 
     return(new_front)
 
+## TODO: use a more apt loss than squared error lol
+def loss(true_next_front, pred_next_front):
+    loss = 0
+
+    diff = true_next_front - pred_next_front
+    diff = np.matrix(diff).flatten()
+    loss = np.sum(np.abs(diff))
+
+    ## extra error term that heavily penalizes missing fire size (worse for underestimating)
+    pred_fire_size = np.sum(pred_next_front)
+    true_fire_size = np.sum(true_next_front[true_next_front >= 0])
+    loss += (10 * (max(0, true_fire_size - pred_fire_size))) + (2 * (max(0, pred_fire_size - true_fire_size)))
+    return loss
+
+
 ###############################################################################################################
 ##                                              MODEL CODE                                                   ##
 ###############################################################################################################
 
-ones = np.ones((10, 10))
-print(estimate_gradient(dist_to_front(ones)))
+
+## TODO: replace boiler plate NN architecture with application specific one
+class sparknet():
+
+    def __init__(self, layer_sizes = [49152, 256, 4096], 
+                    activations = ['sigmoid', 'softmax'],
+                    parameters = None):
+
+        print(f"sparky initializing... {layer_sizes}")
+
+        self.layer_sizes = layer_sizes
+        self.activations = activations
+
+        # initialize weights randomly
+        self.weights = [np.random.randn(layer_sizes[i], layer_sizes[i-1]) for i in range(1, len(layer_sizes))]
+        self.biases = [np.random.randn(layer_sizes[i], 1) for i in range(1, len(layer_sizes))]
+        print(len(self.weights))
+        print(len(self.weights))
+
+        # define useful constants
+        self.nweights = np.sum(list(map(np.product, [w.shape for w in self.weights])))
+        self.nbiases = np.sum(layer_sizes[1:])
+
+        # set parameters manually if they are passed
+        if ((parameters is not None) and (len(parameters) == self.nweights + self.nbiases)):
+            print(f"manually setting parameters. length of param vector is {len(parameters)}")
+            print(len(self.weights))
+            print(len(self.biases))
+            j = 0
+            for i in range(len(self.weights)):
+                print(f"updating weights on layer {i}")
+                intermediate = parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]
+                print(len(intermediate))
+                print(layer_sizes[i])
+                print(layer_sizes[i+1])
+                self.weights[i] = np.array(parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]).reshape(layer_sizes[i+1], layer_sizes[i])
+                j +=  (layer_sizes[i + 1] * layer_sizes[i])
+            for i in range(len(self.biases)):
+                print(f"updating biases on layer {i}")
+                self.biases[i] = np.array(parameters[j:(j + layer_sizes[i + 1])])
+                j += layer_sizes[i + 1]
+
+        print(f"spark init complete; {len(self.weights)}, {len(self.biases)}")
+    
+    def forward(self, X):
+        A = X
+        print("predicting...")
+        print(len(self.weights))
+        for i in range(len(self.weights)):
+            print(f"forward propagating X (shape : {A.shape} through layer {i}...")
+            print(f"  > left-multiplying by W (shape : {self.weights[i].shape})")
+            Z = np.dot(self.weights[i], A) + self.biases[i]
+            print(f"  > applying activation {self.activations[i]} to Z = WX (shape  : {Z.shape})")
+            A = self.activation_function(Z, self.activations[i])
+            print(f"final shape of h(WX) is {A.shape}")
+        print(f"returning predictions Y_hat (shape : {A.shape})")
+        return A
+    
+    def activation_function(self, Z, activation):
+        if activation == 'sigmoid':
+            return 1 / (1 + np.exp(-Z))
+        elif activation == 'relu':
+            return np.maximum(0, Z)
+        elif activation == 'tanh':
+            return np.tanh(Z)
+        elif activation == 'softmax':
+            expZ = np.exp(Z - np.max(Z, axis=0, keepdims=True))
+            return expZ / np.sum(expZ, axis=0, keepdims=True)
+        else:
+            raise ValueError("Activation function not supported.")
+    
+    def predict(self, X):
+        return self.forward(X)
