@@ -1,0 +1,5 @@
+- implement a better fire loss
+- put some moe thought/effort into parameter bounds to search over
+- train sparklin and sparsernet on batch of ~10 fires to at least show that we can overfit the function
+- train sparklin and sparsenet on stochastic objective function which randomly picks ~200 / ~10000 per call
+- evaluate optimal sparklin and sparsenet on batch of ~10-15 validation fires, using summarize_performance on each ones

@@ -1,6 +1,7 @@
 import numpy as np
 from collections import deque
 import tensorflow as tf
+import matplotlib.pyplot as plt
 
 ###############################################################################################################
 ##                                                HELPERS                                                    ##
@@ -64,7 +65,7 @@ def estimate_gradient(matrix):
 
 ## prints front matrix with one row per line and all entries evenly spaced
 def print_matrix(matrix):
-    matrix = np.round(matrix, 3)
+    matrix = np.round(matrix).astype(int)
     np.set_printoptions(linewidth=np.inf)  # Disable line-wrapping
     # Determine the maximum width needed for each element
     max_width = max(len(str(max(row))) for row in matrix)
@@ -108,18 +109,18 @@ def spark_iter(current_front, spread_rates):
 
     return(new_front)
 
-## TODO: use a more apt loss than squared error lol
+## TODO: use a more apt loss than current ad-hoc approach
 def loss(true_next_front, pred_next_front):
     loss = 0
 
-    diff = true_next_front[true_next_front != 0] - pred_next_front[true_next_front != 0]
+    diff = true_next_front[true_next_front != -1] - pred_next_front[true_next_front != -1]
     diff = np.matrix(diff).flatten()
     loss = np.sum(np.abs(diff))
 
     ## extra error term that heavily penalizes missing fire size (worse for underestimating)
     pred_fire_size = np.sum(pred_next_front)
     true_fire_size = np.sum(true_next_front[true_next_front >= 0])
-    loss += (10 * (max(0, true_fire_size - pred_fire_size))) + (2 * (max(0, pred_fire_size - true_fire_size)))
+    loss += (5 * true_next_front[(true_next_front == 1) & (pred_next_front == 0)].flatten().shape[0]) + (2 * true_next_front[(true_next_front == 1) & (pred_next_front == 0)].flatten().shape[0])
 
     return np.array([pred_fire_size, true_fire_size, np.sum(np.abs(diff)), loss])
 
@@ -138,203 +139,69 @@ def test_helpers():
     print("... \n |nabla|:")
     print_matrix(np.sqrt((gradient_x ** 2) + ((gradient_y) ** 2)))
 
+## TODO: check this: this is gpt code
+def visualize_ground_truth_prediction(ground_truth, prediction):
+    # Set up color mapping
+    cmap = plt.cm.colors.ListedColormap(['gray', 'green', 'red'])
+    bounds = [-1.5, -0.5, 0.5, 1.5]
+    norm = plt.cm.colors.BoundaryNorm(bounds, cmap.N)
+
+    # Create color-coded matrix
+    colored_matrix = np.zeros_like(ground_truth, dtype=float)
+    colored_matrix[ground_truth == -1] = -1  # Grey for ground truth == -1
+    colored_matrix[(ground_truth == prediction) & (ground_truth == 1)] = 0
+    colored_matrix[(ground_truth == prediction) & (ground_truth == 0)] = 3
+    colored_matrix[(ground_truth != prediction) & (ground_truth == 0)] = 2
+    colored_matrix[(ground_truth != prediction) & (ground_truth == 1)] = 1
+
+    def print_colored_matrix(matrix, colors):
+        color_mapping = {
+            -1: '\033[90;3m]',     # grey (ground truth unknown)
+            0: '\033[32;1;3m',     # bright green (ground truth = prediction = 1)
+            1: '\033[31;3m',       # red (ground truth = 1, prediction = 0)
+            2: '\033[33;1;3m',     # orange (ground truth = 0,, prediction = 1)
+            3: '\033[32;3m'        # dark green, as this is easy to get (e.g. model(zeroes) gets all of this right)
+        }
+
+        # Find maximum width for each column
+        max_widths = [max(len(str(matrix[i][j])) for i in range(len(matrix))) for j in range(len(matrix[0]))]
+
+        for i in range(len(matrix)):
+            for j in range(len(matrix[0])):
+                color_code = color_mapping.get(colors[i][j], '')  # Get color code
+                value = str(matrix[i][j]).rjust(max_widths[j])  # Right-align value
+                print(f"{color_code}{value}\033[0m", end=' ')  # Reset color
+            print()
+    
+    print_colored_matrix(prediction.astype(int), colored_matrix)
+
+## model is pre-'trained', firedata is a 64 x 64 x 13 array (see firedata construction in training to understand meanings)
+def summarize_performance(model, firedata):
+    learnable = [firedata[:, :, i] for i in range(12)]
+    curr_front = np.round(firedata[:, :, 11])
+    true_front = np.round(firedata[:, :, 12])
+
+    pred_front = model.predict(learnable)
+
+    print("> current front : ")
+    print_matrix(curr_front)
+    print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+    print(" ")
+    print(f"> best loss (pred_fire_size, true_fire_size, unweighted/weighted loss) : {loss(true_front, curr_front)}")
+    print(" ")
+    print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+    print("> loss plot : ")
+    visualize_ground_truth_prediction(true_front, pred_front)
+
 ###############################################################################################################
 ##                                              MODEL CODE                                                   ##
 ###############################################################################################################
-
-
-## incredibly boiler-plate fully connected neural network with plug and play parameters for external optimization 
-## could be great if we had infinite compute but the black box nature of our loss function (in terms of model params)
-## means that this is infeasible
-class sparknet():
-
-    ## class helper
-    def vprint(self, x):
-        if self.verbose == True:
-            print(x)
-
-    def __init__(self, layer_sizes = [49152, 4096], 
-                    activations = ['softmax'],
-                    parameters = None, verbose = True):
-
-        self.verbose = verbose
-        self.vprint(f"> sparky initializing... {layer_sizes}")
-
-        self.layer_sizes = layer_sizes
-        self.activations = activations
-
-        # initialize weights randomly
-        self.weights = [np.random.randn(layer_sizes[i], layer_sizes[i-1]) for i in range(1, len(layer_sizes))]
-        self.biases = [np.random.randn(layer_sizes[i], 1) for i in range(1, len(layer_sizes))]
-
-        # define useful constants
-        self.nweights = np.sum(list(map(np.prod, [w.shape for w in self.weights])))
-        self.nbiases = np.sum(layer_sizes[1:])
-
-        # set parameters manually if they are passed
-        if ((parameters is not None) and (len(parameters) == self.nweights + self.nbiases)):
-            self.vprint(f"    > manually setting parameters. length of param vector is {len(parameters)}")
-            j = 0
-            for i in range(len(self.weights)):
-                intermediate = parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]
-                self.weights[i] = np.array(parameters[j:(j + (layer_sizes[i+1] * layer_sizes[i]))]).reshape(layer_sizes[i+1], layer_sizes[i])
-                j +=  (layer_sizes[i + 1] * layer_sizes[i])
-            for i in range(len(self.biases)):
-                self.biases[i] = np.array(parameters[j:(j + layer_sizes[i + 1])])
-                j += layer_sizes[i + 1]
-
-        self.vprint(f"> sparky init complete!")
-    
-    def forward(self, X):
-        A = X
-        self.vprint("> predicting...")
-        for i in range(len(self.weights)):
-            Z = np.dot(self.weights[i], A) + self.biases[i]
-            A = self.activation_function(Z, self.activations[i])
-        return A
-    
-    def activation_function(self, Z, activation):
-        if activation == 'sigmoid':
-            return 1 / (1 + np.exp(-Z))
-        elif activation == 'relu':
-            return np.maximum(0, Z)
-        elif activation == 'tanh':
-            return np.tanh(Z)
-        elif activation == 'softmax':
-            expZ = np.exp(Z - np.max(Z, axis=0, keepdims=True))
-            return expZ / np.sum(expZ, axis=0, keepdims=True)
-        else:
-            raise ValueError("Activation function not supported.")
-    
-    def predict(self, X):
-        return self.forward(X)
-
-
-## less parameters => more easily optimized
-## with default hyper-parameters, this model has just shy of 100,000 params
-## convolution_size must be odd
-class sparsenet():
-
-    ## parameters is a 1d vector of length sparsenet.nparams
-    def format_params(self, parameters):
-        if ((parameters is None) or (len(parameters) != self.nparams)):
-            return None
-        else :
-            print(parameters)
-            parameters = np.array(parameters)
-            params = {}
-            params['local_NLL_regression_weights'] = parameters[0:36].reshape(3, 12)
-
-            conv = []
-            for q in range(12):
-                conv.append(parameters[(q * (self.convolution_size ** 2)) : ((q + 1) * (self.convolution_size ** 2))].reshape(self.convolution_size, self.convolution_size))
-            params['convolutions'] = conv
-
-            j = 36 + (12 * (self.convolution_size ** 2))
-            params['convolution_regression_weights'] = parameters[j: j + 36].reshape(3, 12)
-            j += 36
-
-            k = j + ((64 ** 2) * 12 * self.global_nodes)
-            params['global_net_weights'] = parameters[j : k].reshape(self.global_nodes, (64 * 64 * 12))
-            params['global_net_biases'] = parameters[k:(k + self.global_nodes)]
-            params['global_regression_weights'] = parameters[k:(k + self.global_nodes)]
-            
-            params['component_weights'] = parameters[(k + self.global_nodes): ]
-            return params
-
-    def perform_convolution(self, matrix, kernel):
-        ## TODO: check this is right; this is GPT code lol
-        m, n = matrix.shape
-        k, _ = kernel.shape
-        result = np.zeros((m - k + 1, n - k + 1))
-
-        for i in range(m - k + 1):
-            for j in range(n - k + 1):
-                window = matrix[i:i + k, j:j + k]
-                result[i, j] = np.sum(window * kernel)
-
-        return result
-
-    def __init__(self, parameters = None,
-                global_nodes = 1,
-                convolution_size = 3,
-                activations = ['sigmoid', 'sigmoid', 'sigmoid']):
-
-        print(f"sparse-ky initializing...")
-
-        self.global_nodes = global_nodes
-        self.activations = activations
-        self.convolution_size = convolution_size
-        self.nparams = (36) + ((12 * (convolution_size ** 2)) + 36) + ((global_nodes * (64 * 64 * 12)) + (2 * global_nodes)) + (3)      ## see architecture building below for explanation
-        self.params = self.format_params(parameters)
-
-        if self.params == None:
-            self.params = {}
-            print("    > no parameters provided. initializing all weights randomly...")
-            self.params['local_NLL_regression_weights'] = np.random.randn(3, 12) ## row one is weights, row two is biases, row three is post-activation regression
-
-            self.params['convolutions'] = [np.random.randn(convolution_size, convolution_size) for i in range(12)]
-            self.params['convolution_regression_weights'] = np.random.randn(3, 12) ## row one is weights, row two is biases, row three is post-activation regression
-
-            self.params['global_net_weights'] = np.random.randn(global_nodes, (64 * 64 * 12))
-            self.params['global_net_biases'] = np.random.randn(global_nodes)
-            self.params['global_regression_weights'] = np.random.randn(global_nodes)
-
-            self.params['component_weights'] = np.random.randn(3)
-
-        print(f"spark init complete!")
-    
-    ## firedata needs to be a list of 12 64 x 64 matricies
-    def forward(self, firedata):
-        pred = np.zeros((64, 64))
-
-        ## add weighted fully local regression component to predictions
-        local_reg_activations= [self.activation_function(np.array(((self.params['local_NLL_regression_weights'][0, i] * firedata[i]) + self.params['local_NLL_regression_weights'][1, i])), self.activations[0]) for i in range(12)]
-        local_reg_component = np.sum(np.array([(self.params['local_NLL_regression_weights'][2, i] * local_reg_activations[i]) for i in range(12)]), axis = 0)
-        pred += local_reg_component * self.params['component_weights'][0] ## adds different values everywhere
-
-        ## apply convolutional component
-        to_conv = [np.pad(firedata[i], (int((self.convolution_size - 1) / 2),), 'constant', constant_values = 0) for i in range(12)]
-        convd = [self.perform_convolution(to_conv[i], self.params['convolutions'][i]) for i in range(12)]
-        conv_reg_activations= [self.activation_function(np.array(((self.params['convolution_regression_weights'][0, i] * convd[i]) + self.params['convolution_regression_weights'][1, i])), self.activations[1]) for i in range(12)]
-        conv_reg_component = np.sum(np.array([(self.params['convolution_regression_weights'][2, i] * conv_reg_activations[i]) for i in range(12)]), axis = 0)
-        pred += conv_reg_component * self.params['component_weights'][1] ## adds different values everywhere
-        
-        ## apply (shallow) global neural network component
-        vectorized = np.stack(firedata, axis = -1).reshape(-1, )
-        nn_activations = self.activation_function(np.dot(self.params['global_net_weights'], vectorized) + self.params['global_net_biases'], self.activations[2])
-        nn_component = np.dot(nn_activations, self.params['global_regression_weights'])
-        pred += nn_component * self.params['component_weights'][2]  ## this is adding a global scalar based on overall conditions
-
-        return pred
-
-    def activation_function(self, Z, activation):
-        if activation == 'sigmoid':
-            try:
-                return 1 / (1 + np.exp(-Z))
-            except RuntimeWarning:
-                print("got one")
-                print(-Z)
-                return 1 / (1 + np.exp(-Z))
-        elif activation == 'relu':
-            return np.maximum(0, Z)
-        elif activation == 'tanh':
-            return np.tanh(Z)
-        elif activation == 'softmax':
-            expZ = np.exp(Z - np.max(Z, axis=0, keepdims=True))
-            return expZ / np.sum(expZ, axis=0, keepdims=True)
-        else:
-            raise ValueError("Activation function not supported.")
-    
-    def predict(self, X):
-        return self.forward(X)
-
 
 ## how many parameters do we *reaally* need? is a global NN component overkill if we can't reasonably
 ## have a high-dimensional final layer, have to keep the model shallow, and are forced to have a tiny bottleneck?
 ## this is, as its name suggests, an even sparser sparsenet which just uses regression on global means
 ## (and a couple other global statistics) for its global component instead of a neural network-ish approach
-
+## 700 parameters with default settings
 ## convolution_size must be odd
 class sparsernet():
 
@@ -343,7 +210,7 @@ class sparsernet():
         if self.verbose == True:
             print(x)
 
-    ## parameters is a 1d vector of length sparsenet.nparams
+    ## parameters is a 1d vector of length sparsenet().nparams
     def format_params(self, parameters):
         if ((parameters is None) or (len(parameters) != self.nparams)):
             return None
@@ -382,7 +249,7 @@ class sparsernet():
         return result
 
     def __init__(self, verbose = False, parameters = None,
-                convolution_size = 11,
+                convolution_size = 7,
                 activations = ['sigmoid', 'sigmoid']):
 
         self.verbose = verbose
@@ -424,7 +291,7 @@ class sparsernet():
         conv_reg_component = np.sum(np.array([(self.params['convolution_regression_weights'][2, i] * conv_reg_activations[i]) for i in range(12)]), axis = 0)
         pred += conv_reg_component * self.params['component_weights'][1] ## adds different values everywhere
         
-        ## apply (shallow) global neural network component
+        ## apply summary statistic regression component
         means = [np.mean(feature) for feature in firedata]
         medians = [np.median(feature) for feature in firedata]
         sds = [np.std(feature) for feature in firedata]
@@ -452,7 +319,117 @@ class sparsernet():
         else:
             raise ValueError("Activation function not supported.")
     
-    def predict(self, X):
-        return self.forward(X)
+    ## see guidelines for firedata above
+    def predict(self, firedata):
+        spread_rates = self.forward(firedata)
+        curr_front = firedata[11]
+        pred_next_front = np.round(spark_iter(curr_front, spread_rates))
+        return pred_next_front
 
-        
+## fully linear version of sparsernet (no activations; fewer regression parameters, + smaller convolutions)
+## 351 params on default settings
+class sparklin():
+    
+    ## class helper
+    def vprint(self, x):
+        if self.verbose == True:
+            print(x)
+
+    ## parameters is a 1d vector of length sparsenet().nparams
+    def format_params(self, parameters):
+        if ((parameters is None) or (len(parameters) != self.nparams)):
+            return None
+        else :
+            parameters = np.array(parameters)
+            params = {}
+            params['local_regression_weights'] = parameters[0:24].reshape(2, 12)
+
+            conv = []
+            for q in range(12):
+                conv.append(parameters[(q * (self.convolution_size ** 2)) : ((q + 1) * (self.convolution_size ** 2))].reshape(self.convolution_size, self.convolution_size))
+            params['convolutions'] = conv
+
+            j = 24 + (12 * (self.convolution_size ** 2))
+            params['convolution_regression_weights'] = parameters[j: j + 24].reshape(2, 12)
+            j += 24
+
+            params['global_bias'] = parameters[j : j + 1]
+
+            params['component_weights'] = parameters[j + 1:]
+
+    def perform_convolution(self, matrix, kernel):
+        ## TODO: check this is right; this is GPT code lol
+        m, n = matrix.shape
+        k, _ = kernel.shape
+        result = np.zeros((m - k + 1, n - k + 1))
+
+        for i in range(m - k + 1):
+            for j in range(n - k + 1):
+                window = matrix[i:i + k, j:j + k]
+                result[i, j] = np.sum(window * kernel)
+
+        return result
+
+    def __init__(self, verbose = False, parameters = None,
+                convolution_size = 5):
+
+        self.verbose = verbose
+        self.vprint(f"sparse-ky initializing...")
+
+        self.convolution_size = convolution_size
+        self.nparams = (24) + ((12 * (convolution_size ** 2)) + 24) + (1) + (2)      ## see architecture building below for explanation
+        self.params = self.format_params(parameters)
+
+        if self.params == None:
+            self.params = {}
+            self.vprint("    > no parameters provided. initializing all weights randomly...")
+            self.params['local_regression_weights'] = np.random.randn(2, 12) ## row one is weights, row two is biases, row three is post-activation regression
+
+            self.params['convolutions'] = [np.random.randn(convolution_size, convolution_size) for i in range(12)]
+            self.params['convolution_regression_weights'] = np.random.randn(2, 12) ## row one is weights, row two is biases, row three is post-activation regression
+
+            self.params['global_bias'] = np.random.randn(1)
+
+            self.params['component_weights'] = np.random.randn(2)
+
+        self.vprint(f"spark init complete!")
+    
+    ## firedata needs to be a list of 12 64 x 64 matricies
+    ## (in the order : )
+        """'Elevation',
+        'Wind\ndirection',
+        'Wind\nvelocity',
+        'Min\ntemp',
+        'Max\ntemp',
+        'Humidity',
+        'Precip',
+        'Drought',
+        'Vegetation',
+        'Population\ndensity',
+        'Energy\nrelease\ncomponent',
+        'Previous\nfire\nmask',
+        'Fire\nmask'"""
+    def forward(self, firedata):
+        pred = np.zeros((64, 64))
+
+        ## add weighted fully local regression component to predictions
+        local_reg_component = np.sum(np.array([((self.params['local_regression_weights'][0, i] * firedata[i]) + self.params['local_regression_weights'][1, i]) for i in range(12)]), axis = 0)
+        pred += local_reg_component * self.params['component_weights'][0]
+
+        ## apply convolutional component
+        to_conv = [np.pad(firedata[i], (int((self.convolution_size - 1) / 2),), 'constant', constant_values = 0) for i in range(12)]
+        convd = [self.perform_convolution(to_conv[i], self.params['convolutions'][i]) for i in range(12)]
+        conv_reg_component = np.sum(np.array([((self.params['convolution_regression_weights'][0, i] * convd[i]) + self.params['convolution_regression_weights'][1, i]) for i in range(12)]), axis = 0)
+        pred += conv_reg_component * self.params['component_weights'][1]
+
+        ## apply global bias
+        pred += self.params['global_bias']
+
+        return pred
+    
+    ## see guidelines for firedata above
+    def predict(self, firedata):
+        spread_rates = self.forward(firedata)
+        curr_front = firedata[11]
+        pred_next_front = np.round(spark_iter(curr_front, spread_rates))
+        return pred_next_front
