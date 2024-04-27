@@ -15,9 +15,9 @@ np.set_printoptions(threshold=np.inf)
 
 ## GLOBAL VARS FOR CONVENIENCE
 Model = sparky.sparsernet
-batch_size = 5
-mini_batch_size = 2
-verbose_error = True
+batch_size = 1
+mini_batch_size = 1
+verbose_error = False
 
 ## get/repackage training dataset
 training_dataset = get_dataset(
@@ -58,16 +58,16 @@ def objective_function(parameters):
     tf = time.time()
     pred_fire_size, true_fire_size, unweighted, loss = losses
 
-    regularization = 5 * np.sum(np.abs(np.array(parameters)))
+    regularization = 100 * (np.sum((np.abs(np.array(parameters))) ** 2) / (np.sum((np.array((2, 2) * int(np.ceil(model.nparams / 2)))) ** 2) + 100))      ## 100 * % of maximal parameter values
 
     if verbose_error :
         print(f"error calculation summary (across {mini_batch_size} examples) :")
         print(f"  > loss averages : (pred/true fire size : {pred_fire_size / mini_batch_size} / {true_fire_size / mini_batch_size},  unweighted loss : {unweighted / mini_batch_size},  damage-weighted loss : {loss / mini_batch_size}")
         print(f"  > regularization penalty : {np.round((1/8) * regularization, 3)}")
-        print(f"  > total weighted loss (objective function) : {np.round(loss, 3)}")
+        print(f"  > total weighted loss (objective function) : {np.round(((5 / 8) * loss) + ((3/8) * regularization), 3)}")
         print(f"  > elapsed time : {tf - t0} sec")
 
-    loss = ((7 / 8) * loss) + ((1/8) * regularization)
+    loss = ((5 / 8) * loss) + ((3/8) * regularization)
     
     return loss
 
@@ -84,7 +84,7 @@ test_obj = objective_function(test_params)
 param_bounds = [(-2.0, 2.0) for i in range(nparams)]
 param_bounds[nparams - 4] = (-100, 10)               ## allow much lower global intercept for spread rate
 
-n_calls, n_initial_points = 200, 100
+n_calls, n_initial_points = 100, 50
 
 ##gp_minimize
 print(f"> initializing a gp_minimize search over {nparams} variables")
@@ -92,7 +92,7 @@ opt = gp_minimize(objective_function, dimensions = param_bounds, n_calls = n_cal
 
 ##forest_minimize
 print(f"> initializing a forest_minimize search over {nparams} variables")
-opt2 = gp_minimize(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)
+opt2 = forest_minimize(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)
 
 print(f"GP OPT BEST : ")
 for i in range(mini_batch_size):
