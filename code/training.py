@@ -15,9 +15,10 @@ np.set_printoptions(threshold=np.inf)
 
 ## GLOBAL VARS FOR CONVENIENCE
 Model = sparky.sparsernet
-batch_size = 1
+batch_size = 1000
 mini_batch_size = 1
-verbose_error = False
+verbose_error = True
+call_no = 1
 
 ## get/repackage training dataset
 training_dataset = get_dataset(
@@ -34,14 +35,19 @@ training_dataset = get_dataset(
 inputs, labels = next(iter(training_dataset))
 firesdata = np.append(inputs.numpy(), labels.numpy(), axis = 3)
 
+## move this back inside objective function to make search stochastic
+mini_batch_ids = sample(range(batch_size), mini_batch_size)
+
 def objective_function(parameters):
+    global call_no
+    print(f"objective function called for the {call_no} time...")
+    call_no += 1
+
     t0 = time.time()
     #progress_bar = tqdm(total=mini_batch_size, desc="calculating error")
 
     model = Model(parameters = parameters)
     losses = np.zeros(4) ## order is [pred_total, true_total, unweighted, weighted]
-
-    mini_batch_ids = sample(range(batch_size), mini_batch_size)
 
     # make this stochastic (iterating through all 18k would be intractable and iterating through 
     # small batches will probably be info-less/encourage overfitting)
@@ -56,18 +62,13 @@ def objective_function(parameters):
         #progress_bar.update(1)
 
     tf = time.time()
-    pred_fire_size, true_fire_size, unweighted, loss = losses
-
-    regularization = 100 * (np.sum((np.abs(np.array(parameters))) ** 2) / (np.sum((np.array((2, 2) * int(np.ceil(model.nparams / 2)))) ** 2) + 100))      ## 100 * % of maximal parameter values
+    pred_fire_size, true_fire_size, diff, loss = losses
 
     if verbose_error :
         print(f"error calculation summary (across {mini_batch_size} examples) :")
-        print(f"  > loss averages : (pred/true fire size : {pred_fire_size / mini_batch_size} / {true_fire_size / mini_batch_size},  unweighted loss : {unweighted / mini_batch_size},  damage-weighted loss : {loss / mini_batch_size}")
-        print(f"  > regularization penalty : {np.round((1/8) * regularization, 3)}")
-        print(f"  > total weighted loss (objective function) : {np.round(((5 / 8) * loss) + ((3/8) * regularization), 3)}")
+        print(f"  > weighted ADI (obj function) : {loss}")
         print(f"  > elapsed time : {tf - t0} sec")
-
-    loss = ((5 / 8) * loss) + ((3/8) * regularization)
+        print("")
     
     return loss
 
@@ -84,23 +85,25 @@ test_obj = objective_function(test_params)
 param_bounds = [(-2.0, 2.0) for i in range(nparams)]
 param_bounds[nparams - 4] = (-100, 10)               ## allow much lower global intercept for spread rate
 
-n_calls, n_initial_points = 100, 50
+n_calls, n_initial_points = 200, 200
 
 ##gp_minimize
-print(f"> initializing a gp_minimize search over {nparams} variables")
+print(f"> initializing a gp_minimize search over {nparams} variables with {n_calls + n_initial_points} total calls")
+call_no = 1
 opt = gp_minimize(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)
 
 ##forest_minimize
-print(f"> initializing a forest_minimize search over {nparams} variables")
+print(f"> initializing a forest_minimize search over {nparams} variables with {n_calls + n_initial_points} total calls")
+call_no = 1
 opt2 = forest_minimize(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)
 
 print(f"GP OPT BEST : ")
-for i in range(mini_batch_size):
+for i in mini_batch_ids:
     print(f"gp_min optimal model's performance on mini-batch example {i}")
     sparky.summarize_performance(Model(parameters = opt.x), firesdata[i, :, :, :])
 
 print(f"FOREST OPT BEST : ")
-for i in range(mini_batch_size):
+for i in mini_batch_ids:
     print(f"forest_min optimal model's performance on mini-batch example {i}")
     sparky.summarize_performance(Model(parameters = opt2.x), firesdata[i, :, :, :])
 

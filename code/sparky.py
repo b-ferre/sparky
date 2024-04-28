@@ -109,20 +109,30 @@ def spark_iter(current_front, spread_rates):
 
     return(new_front)
 
-## TODO: use a more apt loss than current ad-hoc approach
+## computes smoothed, weighted ADI
 def loss(true_next_front, pred_next_front):
-    loss = 0
+    ## regular ADI
+    oo = true_next_front[(true_next_front == 1) & (pred_next_front == 1)].flatten().shape[0]
+    zo = true_next_front[(true_next_front == 0) & (pred_next_front == 1)].flatten().shape[0]
+    oz = true_next_front[(true_next_front == 1) & (pred_next_front == 0)].flatten().shape[0]
 
-    diff = true_next_front[true_next_front != -1] - pred_next_front[true_next_front != -1]
-    diff = np.matrix(diff).flatten()
-    loss = np.sum(np.abs(diff))
+    nom = ((3 * oz) + (2 * zo))
 
-    ## extra error term that heavily penalizes missing fire size (worse for underestimating)
+    ## do some numerical adjustments for ease of use
+    if not np.any(true_next_front == 1):
+        oo = oo + 1
+    if oo == 0:
+        print(f"  > swing and a miss. returning inf...")
+        return 16384 ## larger than any possible value of objective function but not infinity
+
+    swadi = nom / oo
+
+    ## nice things to return for convenience
     pred_fire_size = np.sum(pred_next_front)
     true_fire_size = np.sum(true_next_front[true_next_front >= 0])
-    loss += (5 * true_next_front[(true_next_front == 1) & (pred_next_front == 0)].flatten().shape[0]) + (2 * true_next_front[(true_next_front == 1) & (pred_next_front == 0)].flatten().shape[0])
+    diff_squares = true_next_front[true_next_front == pred_next_front].flatten().shape[0]
 
-    return np.array([pred_fire_size, true_fire_size, np.sum(np.abs(diff)), loss])
+    return np.array([pred_fire_size, true_fire_size, diff_squares, swadi])
 
 def test_helpers():
     test_front = np.zeros((20, 20))
@@ -156,7 +166,7 @@ def visualize_ground_truth_prediction(ground_truth, prediction):
 
     def print_colored_matrix(matrix, colors):
         color_mapping = {
-            -1: '\033[90;3m]',     # grey (ground truth unknown)
+            -1: '\033[90;3m',     # grey (ground truth unknown)
             0: '\033[32;1;3m',     # bright green (ground truth = prediction = 1)
             1: '\033[31;3m',       # red (ground truth = 1, prediction = 0)
             2: '\033[33;1;3m',     # orange (ground truth = 0,, prediction = 1)
