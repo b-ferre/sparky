@@ -75,6 +75,21 @@ def print_matrix(matrix):
         formatted_row = ' '.join(f'{num:{max_width}}' for num in row)
         print(formatted_row)
 
+## helps with pre-convolution feature weighting
+def dot_product_with_scalars(matrices, scalars):
+    # Convert the list of matrices to a numpy array
+    matrices_array = np.array(matrices)
+    
+    # Convert the list of scalars to a numpy array
+    scalars_array = np.array(scalars)
+    
+    # Perform element-wise multiplication between matrices and scalars
+    result = matrices_array * scalars_array[:, None, None]
+
+    result = np.sum([np.matrix(m) for m in result], axis = 0)
+    
+    return result
+
 ## code that mimics SPARK's level-set method
 def spark_iter(current_front, spread_rates):
     ## - current_front and spread_rates must be the same dimension
@@ -197,7 +212,11 @@ def summarize_performance(model, firedata):
     print_matrix(curr_front)
     print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
     print(" ")
-    print(f"> best loss (pred_fire_size, true_fire_size, unweighted/weighted loss) : {loss(true_front, curr_front)}")
+    print("> prev front : ")
+    print_matrix(learnable[11])
+    print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+    print(" ")
+    print(f"> loss (pred_fire_size, true_fire_size, unweighted/weighted loss) : {loss(true_front, curr_front)}")
     print(" ")
     print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
     print("> loss plot : ")
@@ -226,17 +245,23 @@ class sparsernet():
             return None
         else :
             parameters = np.array(parameters)
+            j = 0
             params = {}
-            params['local_NLL_regression_weights'] = parameters[0:36].reshape(3, 12)
+
+            params['local_NLL_regression_weights'] = parameters[0:48].reshape(4, 12)
+            j += 48
 
             conv = []
-            for q in range(12):
+            for q in range(self.n_conv_layers):
                 conv.append(parameters[(q * (self.convolution_size ** 2)) : ((q + 1) * (self.convolution_size ** 2))].reshape(self.convolution_size, self.convolution_size))
             params['convolutions'] = conv
+            j += (self.n_conv_layers * (self.convolution_size ** 2))
 
-            j = 36 + (12 * (self.convolution_size ** 2))
-            params['convolution_regression_weights'] = parameters[j: j + 36].reshape(3, 12)
-            j += 36
+            params['convolution_feat_sel'] = parameters[j : j + (self.n_conv_layers * 12)].reshape(self.n_conv_layers, 12)
+            j += self.n_conv_layers * 12
+
+            params['convolution_regression_weights'] = parameters[j: j + (4 * self.n_conv_layers)].reshape(4, self.n_conv_layers)
+            j += 4 * self.n_conv_layers
 
             k = j + 36
             params['global_stat_weights'] = parameters[j : k]
@@ -260,6 +285,7 @@ class sparsernet():
 
     def __init__(self, verbose = False, parameters = None,
                 convolution_size = 7,
+                n_conv_layers = 20,
                 activations = ['sigmoid', 'sigmoid']):
 
         self.verbose = verbose
@@ -267,16 +293,18 @@ class sparsernet():
 
         self.activations = activations
         self.convolution_size = convolution_size
-        self.nparams = (36) + ((12 * (convolution_size ** 2)) + 36) + (36 + 1) + (3)      ## see architecture building below for explanation
+        self.n_conv_layers = n_conv_layers
+        self.nparams = (48) + ((n_conv_layers * 12) + (n_conv_layers * (convolution_size ** 2)) + (4 * n_conv_layers)) + (36 + 1) + (3)      ## see architecture building below for explanation
         self.params = self.format_params(parameters)
 
         if self.params == None:
             self.params = {}
             self.vprint("    > no parameters provided. initializing all weights randomly...")
-            self.params['local_NLL_regression_weights'] = np.random.randn(3, 12) ## row one is weights, row two is biases, row three is post-activation regression
+            self.params['local_NLL_regression_weights'] = np.random.randn(4, 12) ## row one is weights, row two is biases, row three is post-activation regression
 
             self.params['convolutions'] = [np.random.randn(convolution_size, convolution_size) for i in range(12)]
-            self.params['convolution_regression_weights'] = np.random.randn(3, 12) ## row one is weights, row two is biases, row three is post-activation regression
+            self.params['convolution_feat_sel'] = [np.random.randn(self.n_conv_layers, 12)]      # each conv_layer applied to \sum_j conv_feat_sel[i][j] feat[j]
+            self.params['convolution_regression_weights'] = np.random.randn(4, n_conv_layers)   ## row one is weights, row two is biases, row three is post-activation regression
 
             self.params['global_stat_weights'] = np.random.randn(36)
             self.params['global_bias'] = np.random.randn(1)
@@ -291,17 +319,18 @@ class sparsernet():
 
         ## add weighted fully local regression component to predictions
         local_reg_activations= [self.activation_function(np.array(((self.params['local_NLL_regression_weights'][0, i] * firedata[i]) + self.params['local_NLL_regression_weights'][1, i])), self.activations[0]) for i in range(12)]
-        local_reg_component = np.sum(np.array([(self.params['local_NLL_regression_weights'][2, i] * local_reg_activations[i]) for i in range(12)]), axis = 0)
+        local_reg_component = np.sum(np.array([((self.params['local_NLL_regression_weights'][2, i] * local_reg_activations[i]) + self.params['local_NLL_regression_weights'][3, i]) for i in range(12)]), axis = 0)
         pred += local_reg_component * self.params['component_weights'][0] ## adds different values everywhere
 
-        ## apply convolutional component
-        to_conv = [np.pad(firedata[i], (int((self.convolution_size - 1) / 2),), 'constant', constant_values = 0) for i in range(12)]
-        convd = [self.perform_convolution(to_conv[i], self.params['convolutions'][i]) for i in range(12)]
-        conv_reg_activations= [self.activation_function(np.array(((self.params['convolution_regression_weights'][0, i] * convd[i]) + self.params['convolution_regression_weights'][1, i])), self.activations[1]) for i in range(12)]
-        conv_reg_component = np.sum(np.array([(self.params['convolution_regression_weights'][2, i] * conv_reg_activations[i]) for i in range(12)]), axis = 0)
+        ## apply convolutional componen
+        padded_feats = [np.pad(firedata[i], (int((self.convolution_size - 1) / 2),), 'constant', constant_values = 0) for i in range(12)]
+        to_conv = [dot_product_with_scalars(padded_feats, self.params['convolution_feat_sel'][i, :]) for i in range(self.n_conv_layers)]
+        convd = [self.perform_convolution(to_conv[i], self.params['convolutions'][i]) for i in range(self.n_conv_layers)]
+        conv_reg_activations= [self.activation_function(np.array(((self.params['convolution_regression_weights'][0, i] * convd[i]) + self.params['convolution_regression_weights'][1, i])), self.activations[1]) for i in range(self.n_conv_layers)]
+        conv_reg_component = np.sum(np.array([((self.params['convolution_regression_weights'][2, i] * conv_reg_activations[i]) + self.params['convolution_regression_weights'][3, i]) for i in range(self.n_conv_layers)]), axis = 0)
         pred += conv_reg_component * self.params['component_weights'][1] ## adds different values everywhere
         
-        ## apply summary statistic regression component
+        ## apply summary statistic regression component globally
         means = [np.mean(feature) for feature in firedata]
         medians = [np.median(feature) for feature in firedata]
         sds = [np.std(feature) for feature in firedata]
@@ -443,3 +472,6 @@ class sparklin():
         curr_front = firedata[11]
         pred_next_front = np.round(spark_iter(curr_front, spread_rates))
         return pred_next_front
+
+####
+dot_product_with_scalars([np.ones((2, 2)) for i in range(5)], [i for i in range(5)])

@@ -17,12 +17,15 @@ np.set_printoptions(threshold=np.inf)
 Model = sparky.sparsernet
 batch_size = 1000
 mini_batch_size = 1
-verbose_error = True
-call_no = 1
+verbose_error = False
+optimizer = forest_minimize
+n_calls, n_initial_points = 310, 300
+
+progress_bar = tqdm(total=n_calls, desc="calculating error")
 
 ## get/repackage training dataset
 training_dataset = get_dataset(
-      '../data/next_day_wildfire_spread_train*',
+      './data/next_day_wildfire_spread_train*',
       data_size=64,
       sample_size=64,
       batch_size=batch_size,
@@ -37,11 +40,23 @@ firesdata = np.append(inputs.numpy(), labels.numpy(), axis = 3)
 
 ## move this back inside objective function to make search stochastic
 mini_batch_ids = sample(range(batch_size), mini_batch_size)
+print("prev_front : ")
+sparky.print_matrix(firesdata[mini_batch_ids[0], :, :, 11])
+print(""), print("")
+print("true_next_front : ")
+sparky.print_matrix(firesdata[mini_batch_ids[0], :, :, 12])
+print(""), print("")
+lol = input("train on this fire?")
+while(lol == "no"):
+    mini_batch_ids = sample(range(batch_size), mini_batch_size)
+    sparky.print_matrix(firesdata[mini_batch_ids[0], :, :, 11])
+    print(""), print("")
+    sparky.print_matrix(firesdata[mini_batch_ids[0], :, :, 12])
+    lol = input()
 
 def objective_function(parameters):
-    global call_no
-    print(f"objective function called for the {call_no} time...")
-    call_no += 1
+    global progress_bar
+    progress_bar.update(1)
 
     t0 = time.time()
     #progress_bar = tqdm(total=mini_batch_size, desc="calculating error")
@@ -59,16 +74,20 @@ def objective_function(parameters):
         true_next_front = firesdata[i, :, :, -1]
         losses += sparky.loss(true_next_front, pred_next_front)
 
-        #progress_bar.update(1)
-
     tf = time.time()
     pred_fire_size, true_fire_size, diff, loss = losses
 
     if verbose_error :
+        print("..."), print("")
         print(f"error calculation summary (across {mini_batch_size} examples) :")
         print(f"  > weighted ADI (obj function) : {loss}")
         print(f"  > elapsed time : {tf - t0} sec")
         print("")
+
+        if loss < 5:
+            time.sleep(3)
+            sparky.summarize_performance(model, firesdata[0, :, :, :])
+            time.sleep(3)
     
     return loss
 
@@ -85,33 +104,24 @@ test_obj = objective_function(test_params)
 param_bounds = [(-2.0, 2.0) for i in range(nparams)]
 param_bounds[nparams - 4] = (-100, 10)               ## allow much lower global intercept for spread rate
 
-n_calls, n_initial_points = 200, 200
-
+"""
 ##gp_minimize
-print(f"> initializing a gp_minimize search over {nparams} variables with {n_calls + n_initial_points} total calls")
+print(f"> initializing a gp_minimize search over {nparams} variables with {n_calls} total calls")
 call_no = 1
-opt = gp_minimize(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)
+opt = gp_minimize(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)"""
+
 
 ##forest_minimize
-print(f"> initializing a forest_minimize search over {nparams} variables with {n_calls + n_initial_points} total calls")
-call_no = 1
-opt2 = forest_minimize(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)
+print(f"> initializing a forest_minimize search over {nparams} variables with {n_calls} total calls")
+opt = optimizer(objective_function, dimensions = param_bounds, n_calls = n_calls, n_initial_points = n_initial_points)
 
+"""
 print(f"GP OPT BEST : ")
 for i in mini_batch_ids:
     print(f"gp_min optimal model's performance on mini-batch example {i}")
-    sparky.summarize_performance(Model(parameters = opt.x), firesdata[i, :, :, :])
+    sparky.summarize_performance(Model(parameters = opt.x), firesdata[i, :, :, :]) """
 
 print(f"FOREST OPT BEST : ")
 for i in mini_batch_ids:
     print(f"forest_min optimal model's performance on mini-batch example {i}")
-    sparky.summarize_performance(Model(parameters = opt2.x), firesdata[i, :, :, :])
-
-"""EVO ALGO IMPLEMENTATION""""""
-param_bounds = np.array([[-10.0, 10.0] for i in range(nparams)]) ## FIXME: make more informed choice here
-evo_algo = ga(function = objective_function, dimension = nparams, variable_type = 'real', variable_boundaries = param_bounds, function_timeout = 100)
-## run evo algo
-evo_algo.run()
-## view best parameters
-evo_algo.report
-evo_algo.output_dict """
+    sparky.summarize_performance(Model(parameters = opt.x), firesdata[i, :, :, :])
