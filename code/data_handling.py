@@ -287,6 +287,8 @@ def get_dataset(file_pattern: Text, data_size: int, sample_size: int,
     described in the constants, and with the shapes determined from the input
     parameters to this function.
   """
+  tf.random.set_seed(42)
+
   if (clip_and_normalize and clip_and_rescale):
     raise ValueError('Cannot have both normalize and rescale.')
   dataset = tf.data.Dataset.list_files(file_pattern)

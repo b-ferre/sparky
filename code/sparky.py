@@ -2,6 +2,7 @@ import numpy as np
 from collections import deque
 import tensorflow as tf
 import matplotlib.pyplot as plt
+from scipy.ndimage import convolve
 
 ###############################################################################################################
 ##                                                HELPERS                                                    ##
@@ -49,17 +50,15 @@ def dist_to_front(matrix):
 ## estimates the gradient of said function at every point
 def estimate_gradient(matrix):
     matrix = np.array(matrix, dtype=float)
-    rows, cols = matrix.shape
+    # Define Sobel filters for computing gradients in x and y directions
+    sobel_x = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+    sobel_y = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
+    
+    # Compute gradient in x direction
+    gradient_x = convolve(matrix, sobel_x)
 
-    # Compute gradient_x
-    gradient_x = np.zeros_like(matrix)
-    gradient_x[:, :-1] = np.diff(matrix, axis=1)
-    gradient_x[:, -1] = matrix[:, -1] - matrix[:, -2]
-
-    # Compute gradient_y
-    gradient_y = np.zeros_like(matrix)
-    gradient_y[:-1, :] = np.diff(matrix, axis=0)
-    gradient_y[-1, :] = matrix[-1, :] - matrix[-2, :]
+    # Compute gradient in y direction
+    gradient_y = convolve(matrix, sobel_y)
 
     return gradient_x, gradient_y
 
@@ -97,6 +96,8 @@ def spark_iter(current_front, spread_rates):
     ## - current front is a binary raster where (current_front[i, j] = 1) ==> there is fire in grid cell (i, j)
     ## - spread rates is a numerical raster where each cell contains the spread rate of that cell (which is >= 0,
     ## and should only be 0 if the cell contains entirely unburnable material like water)
+
+    current_front[current_front == -1] = 0
 
     ## generate new front
     new_front = np.zeros(current_front.shape)
@@ -137,7 +138,7 @@ def loss(true_next_front, pred_next_front):
     if not np.any(true_next_front == 1):
         oo = oo + 1
     if oo == 0:
-        print(f"  > swing and a miss. returning inf...")
+        #print(f"  > swing and a miss. returning inf...")
         return 16384 ## larger than any possible value of objective function but not infinity
 
     swadi = nom / oo
@@ -230,7 +231,7 @@ def summarize_performance(model, firedata):
 ## have a high-dimensional final layer, have to keep the model shallow, and are forced to have a tiny bottleneck?
 ## this is, as its name suggests, an even sparser sparsenet which just uses regression on global means
 ## (and a couple other global statistics) for its global component instead of a neural network-ish approach
-## 700 parameters with default settings
+## 1366 parameters with default settings
 ## convolution_size must be odd
 class sparsernet():
 
@@ -472,6 +473,3 @@ class sparklin():
         curr_front = firedata[11]
         pred_next_front = np.round(spark_iter(curr_front, spread_rates))
         return pred_next_front
-
-####
-dot_product_with_scalars([np.ones((2, 2)) for i in range(5)], [i for i in range(5)])
